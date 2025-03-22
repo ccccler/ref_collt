@@ -82,35 +82,76 @@ def save_to_excel(results, output_file=None):
     df.to_excel(output_file, index=False)
     print(f"数据已保存到: {output_file}")
 
-def main():
-    # 可以处理单个URL或多个URL
-    urls = [
-        "https://pubmed.ncbi.nlm.nih.gov/31928354/",
-        # 添加更多URL...
-    ]
+def read_urls_from_excel(excel_file, url_column='url'):
+    """
+    从Excel文件中读取URL列表
     
-    # 如果只有一个URL
-    if len(urls) == 1:
-        results = {urls[0]: get_mesh_terms(urls[0])}
-    else:
-        # 批量处理多个URL
-        results = {}
-        for url in urls:
-            print(f"正在处理: {url}")
+    参数:
+    excel_file: Excel文件路径
+    url_column: 包含URL的列名，默认为'URL'
+    
+    返回:
+    url列表
+    """
+    try:
+        # 读取Excel文件
+        df = pd.read_excel(excel_file)
+        
+        # 检查URL列是否存在
+        if url_column not in df.columns:
+            raise ValueError(f"Excel文件中未找到'{url_column}'列")
+        
+        # 获取URL列表并删除重复项和空值
+        urls = df[url_column].dropna().unique().tolist()
+        
+        print(f"从Excel中成功读取了 {len(urls)} 个唯一URL")
+        return urls
+    
+    except Exception as e:
+        print(f"读取Excel文件时发生错误: {e}")
+        return []
+
+def main():
+    # 指定输入Excel文件路径
+    input_excel = "./ref_collt/a5-testdata.xlsx"  # 替换为你的Excel文件路径
+    
+    # 读取URL
+    urls = read_urls_from_excel(input_excel)
+    if not urls:
+        print("没有找到有效的URL，程序退出")
+        return
+    
+    # 显示部分URL作为预览
+    print("\nURL预览 (前5个):")
+    for i, url in enumerate(urls[:5], 1):
+        print(f"{i}. {url}")
+    
+    # 如果URL数量大于5，显示总数
+    if len(urls) > 5:
+        print(f"... 共 {len(urls)} 个URL")
+    
+    # 确认是否继续
+    confirm = input("\n是否开始处理这些URL? (y/n): ")
+    if confirm.lower() != 'y':
+        print("程序已取消")
+        return
+    
+    # 处理URL并获取MeSH terms
+    results = {}
+    driver = setup_driver()  # 创建一个共用的driver实例
+    try:
+        for i, url in enumerate(urls, 1):
+            print(f"\n处理第 {i}/{len(urls)} 个URL: {url}")
             mesh_terms = get_mesh_terms(url)
             results[url] = mesh_terms
             time.sleep(2)  # 添加延时，避免请求过于频繁
     
-    # 保存结果到Excel
-    save_to_excel(results)
+    finally:
+        driver.quit()
     
-    # 打印结果预览
-    print("\n爬取结果预览：")
-    for url, terms in results.items():
-        print(f"\nURL: {url}")
-        print("MeSH术语：")
-        for i, term in enumerate(terms, 1):
-            print(f"{i}. {term}")
+    # 保存结果到新的Excel文件
+    output_file = f"./ref_collt/a5-testdata_output.xlsx"
+    save_to_excel(results, output_file)
 
 if __name__ == "__main__":
     main()
