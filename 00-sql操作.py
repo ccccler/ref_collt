@@ -29,10 +29,10 @@ if __name__ == "__main__":
 
     db_path = "./ref_collt/pubmed_mesh.db"
     output_path = "./ref_collt/pubmed_mesh_data.xlsx"
-    table_name = "pubmed_mesh_terms"
+    table_name = "test_pubmed_mesh_terms"
 
-    # export_data(db_path, output_path, table_name)
-    delete_data(db_path, table_name)
+    export_data(db_path, output_path, table_name)
+    # delete_data(db_path, table_name)
 
     
     

@@ -45,31 +45,27 @@ def get_mesh_terms_thread(url, driver_queue):
                 # 首先等待页面加载完成
                 wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
                 
-                # 尝试多个可能的选择器
-                selectors = [
-                    "button.keyword-actions-trigger.trigger.keyword-link",
-                    ".keyword-actions-trigger",
-                    "[class*='keyword']",  # 部分类名匹配
-                ]
+                # 首先定位mesh-terms区域
+                mesh_section = wait.until(EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "div#mesh-terms.mesh-terms.keywords-section")
+                ))
                 
+                # 在mesh-terms区域内查找keywords-list下的关键词
                 mesh_terms = []
-                for selector in selectors:
-                    try:
-                        buttons = wait.until(EC.presence_of_all_elements_located(
-                            (By.CSS_SELECTOR, selector)
-                        ))
-                        if buttons:
-                            for button in buttons:
-                                term = button.text.strip()
-                                if term:
-                                    mesh_terms.append(term)
-                            break  # 如果找到了元素就退出循环
-                    except:
-                        continue
+                try:
+                    keywords_list = mesh_section.find_element(By.CSS_SELECTOR, "ul.keywords-list")
+                    buttons = keywords_list.find_elements(By.CSS_SELECTOR, "button.keyword-actions-trigger.trigger.keyword-link")
+                    
+                    for button in buttons:
+                        term = button.text.strip()
+                        if term:
+                            mesh_terms.append(term)
+                            
+                except Exception as e:
+                    print(f"在mesh-terms区域内查找关键词时出错: {e}")
                 
                 if not mesh_terms:
-                    print(f"警告：在URL {url} 中没有找到MeSH术语")
-                    # 输出页面源码以供调试
+                    print(f"警告：在URL {url} 的mesh-terms区域中没有找到MeSH术语")
                     print(f"页面标题: {driver.title}")
                     print("当前页面URL:", driver.current_url)
                 else:
@@ -114,7 +110,7 @@ def save_single_record(url, mesh_terms, connection=None):
         # 获取当前表结构
         cursor.execute("""
         SELECT sql FROM sqlite_master 
-        WHERE type='table' AND name='pubmed_mesh_terms'
+        WHERE type='table' AND name='test_pubmed_mesh_terms'
         """)
         table_info = cursor.fetchone()
         
@@ -122,7 +118,7 @@ def save_single_record(url, mesh_terms, connection=None):
             # 如果表不存在，创建新表
             num_terms = len(mesh_terms)
             create_table_query = """
-            CREATE TABLE IF NOT EXISTS pubmed_mesh_terms (
+            CREATE TABLE IF NOT EXISTS test_pubmed_mesh_terms (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL UNIQUE,
                 {}
@@ -132,14 +128,14 @@ def save_single_record(url, mesh_terms, connection=None):
             cursor.execute(create_table_query)
         else:
             # 获取现有的列数
-            cursor.execute("PRAGMA table_info(pubmed_mesh_terms)")
+            cursor.execute("PRAGMA table_info(test_pubmed_mesh_terms)")
             existing_columns = len([col for col in cursor.fetchall()]) - 3  # 减去id、url和created_at列
             
             # 如果需要，添加新列
             if len(mesh_terms) > existing_columns:
                 for i in range(existing_columns, len(mesh_terms)):
                     try:
-                        cursor.execute(f"ALTER TABLE pubmed_mesh_terms ADD COLUMN mesh_term_{i+1} TEXT")
+                        cursor.execute(f"ALTER TABLE test_pubmed_mesh_terms ADD COLUMN mesh_term_{i+1} TEXT")
                     except sqlite3.OperationalError:
                         pass  # 列已存在，继续处理
         
@@ -149,7 +145,7 @@ def save_single_record(url, mesh_terms, connection=None):
         placeholders = ','.join(['?' for _ in range(len(columns))])
         
         insert_query = f"""
-        INSERT OR REPLACE INTO pubmed_mesh_terms ({','.join(columns)})
+        INSERT OR REPLACE INTO sec_pubmed_mesh_terms ({','.join(columns)})
         VALUES ({placeholders})
         """
         
@@ -246,7 +242,7 @@ def read_urls_from_excel(excel_file, url_column='url'):
 
 def main():
     # 指定输入Excel文件路径
-    input_excel = "./ref_collt/dataset/a6-pubmed-paper02.xlsx"
+    input_excel = "./ref_collt/dataset/sa6-pubmed_paper.xlsx"
     
     # 读取URL
     urls = read_urls_from_excel(input_excel)
