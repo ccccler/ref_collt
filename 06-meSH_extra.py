@@ -2,85 +2,218 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 import pandas as pd
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
+import sqlite3
+from sqlite3 import Error
 
 def setup_driver():
-    # 设置Chrome选项
     chrome_options = Options()
-    # 如果需要无头模式，取消下面这行的注释
-    # chrome_options.add_argument('--headless')
+    # 启用无头模式以减少资源占用
+    chrome_options.add_argument('--headless=new')
     chrome_options.add_argument('--disable-gpu')
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-extensions')
+    # 添加用户代理
+    chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    # 初始化driver
     driver = webdriver.Chrome(options=chrome_options)
+    # 设置页面加载超时时间
+    driver.set_page_load_timeout(30)
     return driver
 
-def get_mesh_terms(url):
-    driver = setup_driver()
+def get_mesh_terms_thread(url, driver_queue):
+    """单个线程的处理函数"""
+    driver = driver_queue.get()
     try:
-        # 访问页面
-        driver.get(url)
-        
-        # 等待页面加载，直到关键词按钮出现
-        wait = WebDriverWait(driver, 10)
-        buttons = wait.until(EC.presence_of_all_elements_located(
-            (By.CSS_SELECTOR, "button.keyword-actions-trigger.trigger.keyword-link")
-        ))
-        
-        # 提取所有关键词文本
-        mesh_terms = []
-        for button in buttons:
-            term = button.text.strip()
-            if term:  # 确保不是空字符串
-                mesh_terms.append(term)
-        
-        return mesh_terms
-        
+        print(f"开始处理URL: {url}")
+        # 添加重试机制
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                driver.get(url)
+                # 添加强制等待
+                time.sleep(2)
+                
+                wait = WebDriverWait(driver, 30)  # 增加等待时间到30秒
+                
+                # 首先等待页面加载完成
+                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                
+                # 尝试多个可能的选择器
+                selectors = [
+                    "button.keyword-actions-trigger.trigger.keyword-link",
+                    ".keyword-actions-trigger",
+                    "[class*='keyword']",  # 部分类名匹配
+                ]
+                
+                mesh_terms = []
+                for selector in selectors:
+                    try:
+                        buttons = wait.until(EC.presence_of_all_elements_located(
+                            (By.CSS_SELECTOR, selector)
+                        ))
+                        if buttons:
+                            for button in buttons:
+                                term = button.text.strip()
+                                if term:
+                                    mesh_terms.append(term)
+                            break  # 如果找到了元素就退出循环
+                    except:
+                        continue
+                
+                if not mesh_terms:
+                    print(f"警告：在URL {url} 中没有找到MeSH术语")
+                    # 输出页面源码以供调试
+                    print(f"页面标题: {driver.title}")
+                    print("当前页面URL:", driver.current_url)
+                else:
+                    print(f"成功从 {url} 提取到 {len(mesh_terms)} 个MeSH术语")
+                
+                return url, mesh_terms
+                
+            except Exception as e:
+                print(f"第 {attempt + 1} 次尝试失败 {url}:")
+                print(f"错误类型: {type(e).__name__}")
+                print(f"错误信息: {str(e)}")
+                if attempt < max_retries - 1:
+                    print("等待后重试...")
+                    time.sleep(5)  # 重试前等待5秒
+                    # 刷新driver
+                    driver.quit()
+                    driver = setup_driver()
+                else:
+                    return url, []
+                    
     except Exception as e:
-        print(f"发生错误: {e}")
-        return []
+        print(f"访问URL时发生错误 {url}:")
+        print(f"错误类型: {type(e).__name__}")
+        print(f"错误信息: {str(e)}")
+        return url, []
         
     finally:
-        # 关闭浏览器
-        driver.quit()
+        driver_queue.put(driver)
 
-def save_to_excel(results, output_file=None):
-    # 如果没有指定输出文件名，使用当前时间创建
-    if output_file is None:
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = f"pubmed_mesh_terms_{current_time}.xlsx"
+def save_single_record(url, mesh_terms, connection=None):
+    """
+    保存单条记录到数据库
+    """
+    try:
+        # 如果没有传入连接，创建新的连接
+        should_close = connection is None
+        if connection is None:
+            connection = sqlite3.connect('./ref_collt/pubmed_mesh.db')
+        
+        cursor = connection.cursor()
+        
+        # 获取当前表结构
+        cursor.execute("""
+        SELECT sql FROM sqlite_master 
+        WHERE type='table' AND name='pubmed_mesh_terms'
+        """)
+        table_info = cursor.fetchone()
+        
+        if not table_info:
+            # 如果表不存在，创建新表
+            num_terms = len(mesh_terms)
+            create_table_query = """
+            CREATE TABLE IF NOT EXISTS pubmed_mesh_terms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL UNIQUE,
+                {}
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """.format(','.join([f'mesh_term_{i+1} TEXT' for i in range(num_terms)]))
+            cursor.execute(create_table_query)
+        else:
+            # 获取现有的列数
+            cursor.execute("PRAGMA table_info(pubmed_mesh_terms)")
+            existing_columns = len([col for col in cursor.fetchall()]) - 3  # 减去id、url和created_at列
+            
+            # 如果需要，添加新列
+            if len(mesh_terms) > existing_columns:
+                for i in range(existing_columns, len(mesh_terms)):
+                    try:
+                        cursor.execute(f"ALTER TABLE pubmed_mesh_terms ADD COLUMN mesh_term_{i+1} TEXT")
+                    except sqlite3.OperationalError:
+                        pass  # 列已存在，继续处理
+        
+        # 准备插入语句
+        num_terms = max(len(mesh_terms), existing_columns if 'existing_columns' in locals() else len(mesh_terms))
+        columns = ['url'] + [f'mesh_term_{i+1}' for i in range(num_terms)]
+        placeholders = ','.join(['?' for _ in range(len(columns))])
+        
+        insert_query = f"""
+        INSERT OR REPLACE INTO pubmed_mesh_terms ({','.join(columns)})
+        VALUES ({placeholders})
+        """
+        
+        # 准备数据
+        row_data = [url] + mesh_terms + [''] * (num_terms - len(mesh_terms))
+        
+        # 执行插入
+        cursor.execute(insert_query, row_data)
+        connection.commit()
+        
+        print(f"已保存记录: {url} (包含 {len(mesh_terms)} 个MeSH术语)")
+        
+    except Exception as e:
+        print(f"保存记录时发生错误 {url}: {e}")
+        print("SQL错误详情:", str(e))
+        import traceback
+        print(traceback.format_exc())
     
-    # 创建一个空的DataFrame
-    all_mesh_terms = []
-    urls = []
+    finally:
+        if should_close and connection:
+            connection.close()
+
+def process_urls_parallel(urls, num_threads=4):
+    """并行处理URLs"""
+    # 创建driver队列
+    driver_queue = Queue()
     
-    # 获取所有可能的MeSH terms（用于创建列）
-    max_terms = 0
-    for url, terms in results.items():
-        max_terms = max(max_terms, len(terms))
-        urls.append(url)
-        all_mesh_terms.append(terms)
+    # 创建数据库连接
+    connection = sqlite3.connect('./ref_collt/pubmed_mesh.db')
     
-    # 创建列名
-    columns = ['URL'] + [f'MeSH_Term_{i+1}' for i in range(max_terms)]
+    # 预先创建多个driver实例
+    for _ in range(num_threads):
+        driver = setup_driver()
+        driver_queue.put(driver)
     
-    # 创建数据
-    data = []
-    for url, terms in zip(urls, all_mesh_terms):
-        # 填充缺失的terms为空字符串
-        terms_padded = terms + [''] * (max_terms - len(terms))
-        data.append([url] + terms_padded)
-    
-    # 创建DataFrame并保存到Excel
-    df = pd.DataFrame(data, columns=columns)
-    df.to_excel(output_file, index=False)
-    print(f"数据已保存到: {output_file}")
+    try:
+        # 使用线程池执行任务
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            # 提交所有任务
+            future_to_url = {
+                executor.submit(get_mesh_terms_thread, url, driver_queue): url 
+                for url in urls
+            }
+            
+            # 获取完成的任务结果
+            total = len(urls)
+            completed = 0
+            
+            for future in as_completed(future_to_url):
+                url, mesh_terms = future.result()
+                # 立即保存到数据库
+                save_single_record(url, mesh_terms, connection)
+                completed += 1
+                print(f"进度: {completed}/{total} ({(completed/total)*100:.1f}%)")
+                
+    finally:
+        # 关闭数据库连接
+        if connection:
+            connection.close()
+            
+        # 关闭所有driver
+        while not driver_queue.empty():
+            driver = driver_queue.get()
+            driver.quit()
 
 def read_urls_from_excel(excel_file, url_column='url'):
     """
@@ -113,7 +246,7 @@ def read_urls_from_excel(excel_file, url_column='url'):
 
 def main():
     # 指定输入Excel文件路径
-    input_excel = "./ref_collt/a5-testdata.xlsx"  # 替换为你的Excel文件路径
+    input_excel = "./ref_collt/dataset/a6-pubmed-paper02.xlsx"
     
     # 读取URL
     urls = read_urls_from_excel(input_excel)
@@ -126,32 +259,15 @@ def main():
     for i, url in enumerate(urls[:5], 1):
         print(f"{i}. {url}")
     
-    # 如果URL数量大于5，显示总数
     if len(urls) > 5:
         print(f"... 共 {len(urls)} 个URL")
     
-    # 确认是否继续
-    confirm = input("\n是否开始处理这些URL? (y/n): ")
-    if confirm.lower() != 'y':
-        print("程序已取消")
-        return
+    # 直接开始处理URLs
+    print("\n开始并行处理URLs...")
+    num_threads = 4
+    process_urls_parallel(urls, num_threads)
     
-    # 处理URL并获取MeSH terms
-    results = {}
-    driver = setup_driver()  # 创建一个共用的driver实例
-    try:
-        for i, url in enumerate(urls, 1):
-            print(f"\n处理第 {i}/{len(urls)} 个URL: {url}")
-            mesh_terms = get_mesh_terms(url)
-            results[url] = mesh_terms
-            time.sleep(2)  # 添加延时，避免请求过于频繁
-    
-    finally:
-        driver.quit()
-    
-    # 保存结果到新的Excel文件
-    output_file = f"./ref_collt/a5-testdata_output.xlsx"
-    save_to_excel(results, output_file)
+    print("所有URL处理完成")
 
 if __name__ == "__main__":
     main()
