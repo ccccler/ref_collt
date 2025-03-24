@@ -110,7 +110,7 @@ def save_single_record(url, mesh_terms, connection=None):
         # 获取当前表结构
         cursor.execute("""
         SELECT sql FROM sqlite_master 
-        WHERE type='table' AND name='test_pubmed_mesh_terms'
+        WHERE type='table' AND name='sec_pubmed_mesh_terms'
         """)
         table_info = cursor.fetchone()
         
@@ -118,7 +118,7 @@ def save_single_record(url, mesh_terms, connection=None):
             # 如果表不存在，创建新表
             num_terms = len(mesh_terms)
             create_table_query = """
-            CREATE TABLE IF NOT EXISTS test_pubmed_mesh_terms (
+            CREATE TABLE IF NOT EXISTS sec_pubmed_mesh_terms (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL UNIQUE,
                 {}
@@ -128,14 +128,14 @@ def save_single_record(url, mesh_terms, connection=None):
             cursor.execute(create_table_query)
         else:
             # 获取现有的列数
-            cursor.execute("PRAGMA table_info(test_pubmed_mesh_terms)")
+            cursor.execute("PRAGMA table_info(sec_pubmed_mesh_terms)")
             existing_columns = len([col for col in cursor.fetchall()]) - 3  # 减去id、url和created_at列
             
             # 如果需要，添加新列
             if len(mesh_terms) > existing_columns:
                 for i in range(existing_columns, len(mesh_terms)):
                     try:
-                        cursor.execute(f"ALTER TABLE test_pubmed_mesh_terms ADD COLUMN mesh_term_{i+1} TEXT")
+                        cursor.execute(f"ALTER TABLE sec_pubmed_mesh_terms ADD COLUMN mesh_term_{i+1} TEXT")
                     except sqlite3.OperationalError:
                         pass  # 列已存在，继续处理
         
@@ -242,7 +242,7 @@ def read_urls_from_excel(excel_file, url_column='url'):
 
 def main():
     # 指定输入Excel文件路径
-    input_excel = "./ref_collt/dataset/sa6-pubmed_paper.xlsx"
+    input_excel = "./ref_collt/dataset/sa6-pubmed-paper.xlsx"
     
     # 读取URL
     urls = read_urls_from_excel(input_excel)
